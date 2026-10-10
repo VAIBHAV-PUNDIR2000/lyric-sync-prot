@@ -14,11 +14,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+import os
 from pydantic import BaseModel
 
 from lyrics import LyricsService, parse_lrc
 from recognizer import RecognitionUnavailable, build_recognizer, wav_duration_s
 from synchronizer import Synchronizer
+from stream_sink import save_audio_stream
+from device_api import format_compact_status
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "front-end"
 
@@ -140,6 +143,49 @@ async def identify(request: Request):
             {"title": match.title, "artist": match.artist}, **app.state.sync.status()}
 
 
+@app.post("/identify/stream")
+async def identify_stream(request: Request, compact: bool = False):
+    """Chunked audio streaming ingestion (e.g. from ESP32)."""
+    received_at = time.monotonic()
+    recognizer = app.state.recognizer
+    if recognizer is None:
+        raise HTTPException(501, "No recognizer available.")
+        
+    content_type = request.headers.get("Content-Type", "audio/wav")
+    path, clip_s = await save_audio_stream(request.stream(), content_type)
+    
+    try:
+        match = await recognizer.identify_file(path)
+    except RecognitionUnavailable as e:
+        raise HTTPException(502, str(e))
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+    if match is None:
+        return {"m": False} if compact else {"matched": False, "message": "Couldn't recognise that."}
+
+    try:
+        found = await app.state.lyrics.find_best(match.title, match.artist)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"LRCLIB request failed: {e}")
+    if not found:
+        return {"m": True, "lyrics_found": False} if compact else {"matched": True, "lyrics_found": False, "title": match.title, "artist": match.artist}
+
+    track, record = found
+    position_ms = (match.offset_s + clip_s) * 1000 + (time.monotonic() - received_at) * 1000
+    try:
+        _load_track(app, track, record, position_ms, "recognition")
+    except HTTPException as e:
+        return {"m": True, "lyrics_found": False} if compact else {"matched": True, "lyrics_found": False, "title": match.title, "artist": match.artist, "message": e.detail}
+        
+    if compact:
+        return format_compact_status(app.state.sync)
+    
+    return {"matched": True, "lyrics_found": True, "recognised_as":
+            {"title": match.title, "artist": match.artist}, **app.state.sync.status()}
+
+
 # ------------------------------------------------------------------- sync ----
 @app.post("/sync")
 async def sync(body: SyncBody):
@@ -178,6 +224,11 @@ async def status():
     s = app.state.sync.status()
     s["recognizer_available"] = app.state.recognizer is not None
     return s
+
+
+@app.get("/device/status")
+async def device_status():
+    return format_compact_status(app.state.sync)
 
 
 # --------------------------------------------------------------- frontend ----
