@@ -5,3 +5,5 @@ __pycache__/
 
 ESP32/test_interp
 ESP32/test_stream
+.agents/
+.pytest_cache/
