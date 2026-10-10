@@ -9,10 +9,12 @@ RingBuffer::~RingBuffer() {
 }
 
 size_t RingBuffer::available() const {
-    if (_head >= _tail) {
-        return _head - _tail;
+    size_t h = _head.load();
+    size_t t = _tail.load();
+    if (h >= t) {
+        return h - t;
     }
-    return _size - _tail + _head;
+    return _size - t + h;
 }
 
 size_t RingBuffer::freeSpace() const {
