@@ -31,7 +31,7 @@ class Synchronizer:
              source: str = "manual", playing: bool = True) -> None:
         self.track = track
         self.lines = lines
-        self._times = [l.time_ms for l in lines]
+        self._times = [l.start_time_ms for l in lines]
         self.source = source
         self.set_position(position_ms, playing=playing)
 

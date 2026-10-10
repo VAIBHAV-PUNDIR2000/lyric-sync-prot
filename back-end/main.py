@@ -91,7 +91,7 @@ async def lyrics():
     sync: Synchronizer = app.state.sync
     return {
         "track": sync.track.to_dict() if sync.track else None,
-        "lines": [{"time_ms": l.time_ms, "text": l.text} for l in sync.lines],
+        "lines": [{"time_ms": l.start_time_ms, "text": l.text} for l in sync.lines],
     }
 
 

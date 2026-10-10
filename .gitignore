@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+ESP32/test_interp
+ESP32/test_stream

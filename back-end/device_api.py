@@ -15,5 +15,5 @@ def format_compact_status(sync: Synchronizer) -> dict:
         "pos": round(pos),
         "srv": round(time.time() * 1000),
         "idx": idx,
-        "lines": [{"t": l.time_ms, "s": l.text} for l in lines]
+        "lines": [{"t": l.start_time_ms, "s": l.text} for l in lines]
     }

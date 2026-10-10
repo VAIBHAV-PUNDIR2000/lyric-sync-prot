@@ -19,7 +19,7 @@ _TIMESTAMP = re.compile(r"\[(\d+):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 
 @dataclass
 class LyricLine:
-    time_ms: int
+    start_time_ms: int
     text: str
 
 
@@ -54,7 +54,7 @@ def parse_lrc(lrc: str) -> list[LyricLine]:
             millis = int(frac.ljust(3, "0")[:3])
             t = (int(minutes) * 60 + int(seconds)) * 1000 + millis
             lines.append(LyricLine(t, text))
-    lines.sort(key=lambda l: l.time_ms)
+    lines.sort(key=lambda l: l.start_time_ms)
     return lines
 
 
