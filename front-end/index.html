@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lyric Sync</title>
+<style>
+  :root { --bg:#0e0f13; --panel:#171922; --text:#f2f3f7; --dim:#7d8296; --accent:#7c9cff; --ok:#4ade80; --warn:#fbbf24; --err:#f87171; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, Segoe UI, sans-serif; min-height:100vh; display:flex; flex-direction:column; }
+  header { padding:14px 20px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; background:var(--panel); }
+  header h1 { font-size:16px; margin:0 12px 0 0; letter-spacing:.5px; }
+  input[type=text] { flex:1; min-width:200px; padding:9px 12px; border-radius:8px; border:1px solid #2a2d3b; background:#0e0f13; color:var(--text); font-size:14px; }
+  select { padding:9px 10px; border-radius:8px; border:1px solid #2a2d3b; background:#0e0f13; color:var(--text); font-size:13px; }
+  button { padding:9px 14px; border-radius:8px; border:0; background:#2a2d3b; color:var(--text); cursor:pointer; font-size:14px; }
+  button:hover { background:#363a4d; }
+  button.primary { background:var(--accent); color:#0b1020; font-weight:600; }
+  button.primary:hover { background:#93adff; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  #results { background:var(--panel); border-top:1px solid #2a2d3b; max-height:240px; overflow:auto; display:none; }
+  #results div { padding:9px 20px; cursor:pointer; display:flex; justify-content:space-between; gap:12px; font-size:14px; }
+  #results div:hover { background:#20232f; }
+  #results small { color:var(--dim); }
+  .nolyrics { opacity:.45; }
+  main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; text-align:center; gap:14px; }
+  #track { color:var(--dim); font-size:15px; min-height:22px; }
+  #prev, #next { color:var(--dim); font-size:20px; min-height:30px; max-width:900px; }
+  #current { font-size:clamp(28px,5vw,52px); font-weight:700; line-height:1.25; max-width:900px; min-height:70px; }
+  #current.idle { color:var(--dim); font-weight:500; font-size:22px; }
+  #current .w { color:#6d728a; transition:color .12s, text-shadow .12s; }
+  #current .w.done { color:var(--text); }
+  #current .w.now { color:var(--accent); text-shadow:0 0 18px rgba(124,156,255,.75); }
+  #meterWrap { width:260px; height:6px; background:#20232f; border-radius:3px; overflow:hidden; visibility:hidden; }
+  #meter { height:100%; width:0; background:var(--ok); transition:width .08s; }
+  #listenBtn.on { background:var(--err); color:#fff; }
+  footer { padding:12px 20px; background:var(--panel); display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px; color:var(--dim); }
+  footer .spacer { flex:1; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--dim); display:inline-block; margin-right:6px; }
+  .dot.playing { background:var(--ok); } .dot.paused { background:var(--warn); } .dot.err { background:var(--err); }
+  #msg { color:var(--warn); }
+  #full { display:none; background:var(--panel); max-height:35vh; overflow:auto; padding:10px 20px; text-align:center; line-height:1.9; color:var(--dim); }
+  #full .on { color:var(--text); font-weight:700; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎵 Lyric Sync</h1>
+  <input id="q" type="text" placeholder="Search a song to start manually (e.g. coldplay yellow)…">
+  <button id="searchBtn">Search</button>
+  <select id="source" title="Where to listen">
+    <option value="mic">Source: microphone</option>
+    <option value="tab">Source: this computer's audio (share a tab)</option>
+  </select>
+  <button id="listenBtn" class="primary" title="Listens to your mic, identifies the song and keeps the lyrics synced">🎤 Start listening</button>
+</header>
+<div id="results"></div>
+
+<main>
+  <div id="track"></div>
+  <div id="prev"></div>
+  <div id="current" class="idle">Play some music, then press “Start listening”.</div>
+  <div id="next"></div>
+  <div id="meterWrap" title="Microphone level"><div id="meter"></div></div>
+</main>
+
+<div id="full"></div>
+
+<footer>
+  <span><span id="dot" class="dot"></span><span id="state">idle</span></span>
+  <span id="pos"></span>
+  <span id="msg"></span>
+  <span id="level" style="font-variant-numeric:tabular-nums"></span>
+  <span class="spacer"></span>
+  <button id="back">−0.5s</button>
+  <button id="fwd">+0.5s</button>
+  <button id="pauseBtn">Pause</button>
+  <button id="fullBtn">Show all</button>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const API = location.origin;      // same server serves the UI and the API
+let lastStatus = null, lastFetch = 0, fullLines = null, fullFor = null, showFull = false, busy = false;
+
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || r.statusText);
+  return data;
+}
+const post = (p, body) => api(p, { method: "POST", headers: {"Content-Type":"application/json"}, body: body ? JSON.stringify(body) : undefined });
+function say(text, ms = 5000) { $("msg").textContent = text; if (text) setTimeout(() => { if ($("msg").textContent === text) $("msg").textContent = ""; }, ms); }
+
+// ---------- status polling ----------
+async function poll() {
+  try {
+    lastStatus = await api("/status"); lastFetch = performance.now();
+    $("listenBtn").disabled = !lastStatus.recognizer_available;
+    $("listenBtn").title = lastStatus.recognizer_available ? "" : "Recognizer not installed (pip install shazamio). Manual search still works.";
+    await ensureFull();
+    if (lastStatus.ended && lastStatus.playing) { await post('/pause'); lastStatus.playing = false; }
+  } catch (e) { lastStatus = null; $("state").textContent = "backend unreachable"; $("dot").className = "dot err"; }
+}
+async function ensureFull() {
+  const id = lastStatus?.track?.id ?? null;
+  if (!lastStatus?.has_track) { fullLines = null; fullFor = null; return; }
+  if (fullFor === id && fullLines) return;
+  const l = await api("/lyrics"); fullLines = l.lines; fullFor = id; renderFull(-1);
+}
+
+// ---------- render (runs every frame; position extrapolated locally between polls) ----------
+function render() {
+  const s = lastStatus;
+  if (s && s.has_track && fullLines) {
+    let pos = s.position_ms + (s.playing ? performance.now() - lastFetch : 0);
+    let idx = -1; for (let i = 0; i < fullLines.length && fullLines[i].time_ms <= pos; i++) idx = i;
+    const t = i => (i >= 0 && i < fullLines.length) ? fullLines[i].text : "";
+    $("track").textContent = `${s.track.title} — ${s.track.artist}  ·  via ${s.source}`;
+    $("prev").textContent = t(idx - 1);
+    $("next").textContent = t(idx + 1);
+    renderCurrent(idx, pos);
+    $("pos").textContent = fmt(pos);
+    $("state").textContent = s.playing ? "synced / playing" : "paused";
+    $("dot").className = "dot " + (s.playing ? "playing" : "paused");
+    $("pauseBtn").textContent = s.playing ? "Pause" : "Resume";
+    if (showFull) renderFull(idx);
+  } else if (s) {
+    $("track").textContent = $("prev").textContent = $("next").textContent = "";
+    $("pos").textContent = "";
+    $("state").textContent = "idle"; $("dot").className = "dot";
+    if (!live && !busy) { $("current").className = "idle"; $("current").textContent = "Play some music, then press “Start listening”."; }
+  }
+  requestAnimationFrame(render);
+}
+// ---------- word-by-word highlight ----------
+// LRCLIB only has per-LINE timestamps, so each word's timing is estimated: the time the line is
+// "sung" is spread over its words in proportion to their length.
+const MS_PER_CHAR = 75, LINE_PAD_MS = 400, GAP_MARGIN_MS = 150;
+let curKey = null, curWords = [], curSpans = [], curWordIdx = -2;
+
+function estimateWords(idx) {
+  const line = fullLines[idx], next = fullLines[idx + 1];
+  const words = line.text.split(/\s+/).filter(Boolean);
+  const weights = words.map(w => w.length + 1);
+  const total = weights.reduce((a, b) => a + b, 0);
+  const gap = next ? next.time_ms - line.time_ms : 5000;
+  const sung = Math.max(500, Math.min(gap - GAP_MARGIN_MS, line.text.length * MS_PER_CHAR + LINE_PAD_MS));
+  let acc = 0;
+  return { words, starts: weights.map(w => { const s = acc / total * sung; acc += w; return s; }), sung };
+}
+
+function renderCurrent(idx, pos) {
+  const cur = $("current"), line = fullLines[idx], text = line ? line.text : "";
+  if (!text) {                                    // before first line / instrumental gap
+    curKey = null; cur.className = "idle"; cur.textContent = idx < 0 ? "♪ …" : "♪"; return;
+  }
+  const key = fullFor + ":" + idx;
+  if (key !== curKey) {                           // new line: rebuild spans once, not every frame
+    curKey = key; curWordIdx = -2;
+    const est = estimateWords(idx); curWords = est;
+    cur.className = "";
+    cur.innerHTML = est.words.map(w => `<span class="w">${esc(w)}</span>`).join(" ");
+    curSpans = [...cur.children];
+  }
+  const into = pos - line.time_ms;
+  let w = -1;                                     // -1 = not started, words.length = line finished
+  if (into >= curWords.sung) w = curWords.words.length;
+  else for (let i = 0; i < curWords.starts.length && curWords.starts[i] <= into; i++) w = i;
+  if (w === curWordIdx) return;                   // nothing changed this frame
+  curWordIdx = w;
+  curSpans.forEach((s, i) => { s.className = "w " + (i < w ? "done" : i === w ? "now" : ""); });
+}
+
+const fmt = ms => { const s = Math.floor(ms/1000); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
+let lastFullIdx = -2;
+function renderFull(idx) {
+  if (!fullLines) { $("full").innerHTML = ""; return; }
+  if (idx === lastFullIdx && $("full").childElementCount === fullLines.length) return;
+  lastFullIdx = idx;
+  $("full").innerHTML = fullLines.map((l, i) => `<div class="${i === idx ? "on" : ""}">${esc(l.text) || "♪"}</div>`).join("");
+  const on = $("full").querySelector(".on"); if (on) on.scrollIntoView({block:"center"});
+}
+const esc = s => s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+// ---------- manual search ----------
+async function search() {
+  const q = $("q").value.trim(); if (!q) return;
+  const box = $("results"); box.style.display = "block"; box.innerHTML = "<div>Searching…</div>";
+  try {
+    const res = await api("/search?q=" + encodeURIComponent(q));
+    if (!res.length) { box.innerHTML = "<div>No results.</div>"; return; }
+    box.innerHTML = "";
+    for (const t of res) {
+      const d = document.createElement("div");
+      if (!t.has_synced) d.className = "nolyrics";
+      d.innerHTML = `<span>${esc(t.title)} <small>— ${esc(t.artist)}${t.album ? " · " + esc(t.album) : ""}</small></span><small>${t.has_synced ? (t.duration_s ? fmt(t.duration_s*1000) : "synced") : "no synced lyrics"}</small>`;
+      if (t.has_synced) d.onclick = () => choose(t);
+      box.appendChild(d);
+    }
+  } catch (e) { box.innerHTML = `<div>${esc(e.message)}</div>`; }
+}
+async function choose(t) {
+  $("results").style.display = "none";
+  try { await post("/select", { lrclib_id: t.id, position_ms: 0 }); say("Started from 0:00 — press play on your song now, then use ±0.5s to line up."); await poll(); }
+  catch (e) { say(e.message); }
+}
+
+// ---------- listen & identify ----------
+const CLIP_SECONDS = 8, TARGET_RATE = 16000;
+let live = false, loopId = 0;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Live mode: identify, then keep re-checking (corrects drift, catches song changes).
+async function toggleLive() {
+  live = !live;
+  const myId = ++loopId;                 // a newer Start/Stop makes any older loop exit
+  const btn = $("listenBtn");
+  btn.classList.toggle("on", live);
+  btn.textContent = live ? "■ Stop listening" : "🎤 Start listening";
+  if (!live) { say(""); stopShared(); $("meterWrap").style.visibility = "hidden"; return; }
+  while (live && myId === loopId) {
+    const result = await listenOnce();
+    if (!live || myId !== loopId) break;
+    if (result === "error") { live = false; btn.classList.remove("on"); btn.textContent = "🎤 Start listening"; stopShared(); break; }
+    try {
+      if (result === "silent") {            // nothing audible: stop the lyrics, wait for sound
+        if (lastStatus?.has_track && lastStatus.playing) { await post("/pause"); poll(); }
+        say("No sound heard — lyrics paused. Waiting for music…", 600000);
+        await monitor(0.02, true, Infinity, myId);
+      } else if (result === "matched") {    // keep watching the sound; recheck in 30s or when music restarts
+        await monitor(lastRms, false, 30000, myId);
+      } else {
+        await sleep(1500);                  // heard sound but no match: try again
+      }
+    } catch (e) { say(e.message, 10000); live = false; btn.classList.remove("on"); btn.textContent = "🎤 Start listening"; stopShared(); }
+  }
+}
+
+// Watches the input level. Pauses the lyrics when the sound drops well below the music's level,
+// and returns when it's time to identify again: music came back after a silence, or `maxMs`
+// passed while it kept playing. The live numbers are shown in the footer so you can see why.
+const SILENCE_MS = 3000, RESUME_MS = 800, DROP_RATIO = 0.3, ABS_FLOOR = 0.0015, WAKE_LEVEL = 0.006;
+async function monitor(refRms, startPaused, maxMs = Infinity, myId = loopId) {
+  const { stream: full, keep } = await getAudioStream();
+  const ctx = new AudioContext(); await ctx.resume();
+  const src = ctx.createMediaStreamSource(new MediaStream(full.getAudioTracks()));
+  const an = ctx.createAnalyser(); an.fftSize = 2048;
+  const mute = ctx.createGain(); mute.gain.value = 0;
+  src.connect(an); an.connect(mute); mute.connect(ctx.destination);
+  const buf = new Float32Array(an.fftSize), hist = [];
+  $("meterWrap").style.visibility = "visible";
+  let musicLevel = refRms;                               // how loud the music has been recently
+  let quietSince = null, loudSince = null, paused = startPaused;
+  const t0 = Date.now();
+  try {
+    while (live && myId === loopId) {
+      await sleep(200);
+      an.getFloatTimeDomainData(buf);
+      let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      hist.push(Math.sqrt(sum / buf.length)); if (hist.length > 5) hist.shift();
+      const level = hist.reduce((a, b) => a + b, 0) / hist.length, now = Date.now();   // ~1 s average
+      if (!paused) musicLevel = Math.max(musicLevel * 0.999, level);                    // slow decay
+      const threshold = startPaused ? WAKE_LEVEL : Math.max(ABS_FLOOR, musicLevel * DROP_RATIO);
+      const quiet = level < threshold;
+      $("meter").style.width = Math.min(100, level * 600) + "%";
+      $("level").textContent = `level ${level.toFixed(4)} · ${startPaused || paused ? "wakes above" : "pauses below"} ${threshold.toFixed(4)}`;
+      if (quiet) {
+        loudSince = null; if (quietSince === null) quietSince = now;
+        if (!paused && now - quietSince > SILENCE_MS) {
+          paused = true;
+          await post("/pause");                                   // freeze, then take back the silent seconds
+          await post("/nudge", { delta_ms: -(now - quietSince) });
+          poll();
+          say("No sound — lyrics paused. Waiting for music…", 600000);
+        }
+      } else {
+        quietSince = null; if (loudSince === null) loudSince = now;
+        if (paused && now - loudSince > RESUME_MS) return "resumed";
+      }
+      if (!paused && now - t0 > maxMs) return "recheck";
+    }
+  } finally {
+    src.disconnect(); an.disconnect();
+    if (!keep) full.getTracks().forEach(t => t.stop());
+    await ctx.close(); $("meter").style.width = "0"; $("level").textContent = "";
+  }
+}
+
+// returns "matched" | "nomatch" | "silent" | "error"
+let lastRms = 0.02;
+async function listenOnce() {
+  busy = true;
+  const cur = $("current"), hasTrack = !!lastStatus?.has_track;
+  try {
+    say("🎤 Listening…", 20000);
+    if (!hasTrack) { cur.className = "idle"; cur.textContent = "🎤 Listening…"; }
+    $("meterWrap").style.visibility = "visible";
+    const { wav, peak, rms, label } = await recordWav(CLIP_SECONDS);
+    lastRms = Math.max(rms, 0.005);
+    $("meter").style.width = "0";
+    if (peak < 0.01) { say("Heard almost nothing from \"" + label + "\". Take headphones off, check this is the right input, or set Source to this computer audio.", 12000); return "silent"; }
+    say("Identifying…", 20000);
+    const r = await fetch(API + "/identify", { method: "POST", headers: {"Content-Type":"audio/wav"}, body: wav });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || r.statusText);
+    await poll();
+    if (!data.matched) { say(data.message, 8000); return "nomatch"; }
+    if (data.lyrics_found === false) { say(`${data.title} — ${data.artist}: ${data.message}`, 8000); return "nomatch"; }
+    say(`Recognised: ${data.recognised_as.title} — ${data.recognised_as.artist} · synced at ${fmt(data.position_ms)}`, 8000);
+    return "matched";
+  } catch (e) {
+    say(e.name === "NotAllowedError" ? "Permission denied or cancelled. For the mic, allow it in the browser site settings." : e.message, 10000);
+    return "error";
+  } finally { busy = false; $("meter").style.width = "0"; }
+}
+
+const INSECURE_MSG = "Browsers block the mic on this address (" + location.host + "). Open http://localhost:" + (location.port || 80) + " instead.";
+
+let shared = null;                         // tab-audio share, kept for the whole live session
+function stopShared() { if (shared) shared.getTracks().forEach(t => t.stop()); shared = null; }
+
+async function getAudioStream() {
+  if ($("source").value === "tab") {
+    if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("This browser cannot share tab audio. Use Chrome or Edge, or switch the source to microphone.");
+    if (shared && shared.getAudioTracks().some(t => t.readyState === "live")) return { stream: shared, label: "shared tab audio", keep: true };
+    stopShared();
+    const d = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    if (!d.getAudioTracks().length) { d.getTracks().forEach(t => t.stop()); throw new Error("No audio was shared. Pick a Chrome Tab and tick 'Also share tab audio'."); }
+    shared = d;
+    return { stream: d, label: "shared tab audio", keep: true };
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+    echoCancellation: false, noiseSuppression: false, autoGainControl: false, voiceIsolation: false } });
+  return { stream, label: stream.getAudioTracks()[0]?.label || "default microphone", keep: false };
+}
+
+async function recordWav(seconds) {
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error(INSECURE_MSG);
+  const { stream: full, label, keep } = await getAudioStream();
+  const stream = new MediaStream(full.getAudioTracks());
+  say("Listening via: " + label, 20000);
+  const ctx = new AudioContext(); await ctx.resume();
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const chunks = []; let peak = 0, sumSq = 0, count = 0;
+  proc.onaudioprocess = e => {
+    const d = new Float32Array(e.inputBuffer.getChannelData(0)); chunks.push(d);
+    let p = 0; for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > p) p = a; }
+    for (let i = 0; i < d.length; i++) sumSq += d[i] * d[i]; count += d.length;
+    peak = Math.max(peak, p); $("meter").style.width = Math.min(100, p * 250) + "%";
+  };
+  const mute = ctx.createGain(); mute.gain.value = 0;            // keep the graph running without playing the mic back
+  src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+  await sleep(seconds * 1000);
+  const inRate = ctx.sampleRate;
+  src.disconnect(); proc.disconnect(); if (!keep) full.getTracks().forEach(t => t.stop()); await ctx.close();
+  return { wav: encodeWav(downsample(chunks, inRate, TARGET_RATE), TARGET_RATE), peak, rms: Math.sqrt(sumSq / Math.max(1, count)), label };
+}
+function downsample(chunks, inRate, outRate) {
+  const n = chunks.reduce((a, c) => a + c.length, 0), all = new Float32Array(n);
+  let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
+  const ratio = inRate / outRate, outLen = Math.floor(n / ratio), out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {                              // box-filter average (simple anti-alias)
+    const a = Math.floor(i * ratio), b = Math.min(n, Math.floor((i + 1) * ratio));
+    let sum = 0; for (let j = a; j < b; j++) sum += all[j];
+    out[i] = sum / Math.max(1, b - a);
+  }
+  return out;
+}
+function encodeWav(samples, rate) {
+  const buf = new ArrayBuffer(44 + samples.length * 2), v = new DataView(buf);
+  const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); w(8, "WAVEfmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, samples[i])) * 0x7fff, true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+// ---------- controls ----------
+$("searchBtn").onclick = search;
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") search(); });
+$("listenBtn").onclick = toggleLive;
+$("back").onclick = async () => { await post("/nudge", { delta_ms: -500 }); poll(); };
+$("fwd").onclick  = async () => { await post("/nudge", { delta_ms: 500 }); poll(); };
+$("pauseBtn").onclick = async () => { await post(lastStatus?.playing ? "/pause" : "/resume"); poll(); };
+$("fullBtn").onclick = () => { showFull = !showFull; $("full").style.display = showFull ? "block" : "none"; $("fullBtn").textContent = showFull ? "Hide all" : "Show all"; lastFullIdx = -2; };
+
+if (!navigator.mediaDevices?.getUserMedia) say(INSECURE_MSG, 600000);   // warn up front, not after the first click
+poll(); setInterval(poll, 1000); requestAnimationFrame(render);
+</script>
+</body>
+</html>
