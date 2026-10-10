@@ -92,11 +92,15 @@ class LyricsService:
             params["artist_name"] = artist
         if not params:
             return []
-        r = await self._client.get("/search", params=params)
-        r.raise_for_status()
-        records = r.json()
-        records.sort(key=lambda rec: not rec.get("syncedLyrics"))  # stable
-        return [(_track_from_record(rec), rec) for rec in records]
+        try:
+            r = await self._client.get("/search", params=params)
+            r.raise_for_status()
+            records = r.json()
+            records.sort(key=lambda rec: not rec.get("syncedLyrics"))  # stable
+            return [(_track_from_record(rec), rec) for rec in records]
+        except httpx.HTTPError as e:
+            print(f"LRCLIB API error: {e}")
+            return []
 
     async def get_by_id(self, lrclib_id: int) -> tuple[TrackInfo, dict]:
         r = await self._client.get(f"/get/{lrclib_id}")
