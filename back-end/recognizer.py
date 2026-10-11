@@ -35,6 +35,7 @@ class RecognitionUnavailable(RuntimeError):
 
 class Recognizer(Protocol):
     async def identify(self, wav_bytes: bytes) -> Match | None: ...
+    async def identify_file(self, file_path: str) -> Match | None: ...
 
 
 def wav_duration_s(wav_bytes: bytes) -> float:
@@ -64,6 +65,23 @@ class ShazamRecognizer:
                 raise RecognitionUnavailable(f"Shazam request failed: {e}") from e
         finally:
             os.unlink(path)
+
+        matches = result.get("matches") or []
+        track = result.get("track")
+        if not matches or not track:
+            return None
+        return Match(
+            title=track.get("title", "Unknown"),
+            artist=track.get("subtitle", "Unknown"),
+            offset_s=float(matches[0].get("offset", 0.0)),
+            raw={"key": track.get("key"), "match": matches[0]},
+        )
+
+    async def identify_file(self, file_path: str) -> Match | None:
+        try:
+            result = await self._shazam.recognize(file_path)
+        except Exception as e:
+            raise RecognitionUnavailable(f"Shazam request failed: {e}") from e
 
         matches = result.get("matches") or []
         track = result.get("track")

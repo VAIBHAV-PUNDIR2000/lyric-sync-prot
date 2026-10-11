@@ -19,7 +19,7 @@ _TIMESTAMP = re.compile(r"\[(\d+):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 
 @dataclass
 class LyricLine:
-    time_ms: int
+    start_time_ms: int
     text: str
 
 
@@ -54,7 +54,7 @@ def parse_lrc(lrc: str) -> list[LyricLine]:
             millis = int(frac.ljust(3, "0")[:3])
             t = (int(minutes) * 60 + int(seconds)) * 1000 + millis
             lines.append(LyricLine(t, text))
-    lines.sort(key=lambda l: l.time_ms)
+    lines.sort(key=lambda l: l.start_time_ms)
     return lines
 
 
@@ -82,7 +82,10 @@ class LyricsService:
 
     async def search(self, query: str | None = None, *, title: str | None = None,
                      artist: str | None = None) -> list[tuple[TrackInfo, dict]]:
-        """Return (TrackInfo, raw record) pairs, synced-lyrics results first."""
+        """Return (TrackInfo, raw record) pairs, synced-lyrics results first.
+
+        Raises httpx.HTTPError on network / API failures (H4: callers handle it).
+        """
         params: dict[str, str] = {}
         if query:
             params["q"] = query
@@ -95,7 +98,7 @@ class LyricsService:
         r = await self._client.get("/search", params=params)
         r.raise_for_status()
         records = r.json()
-        records.sort(key=lambda rec: not rec.get("syncedLyrics"))  # stable
+        records.sort(key=lambda rec: not rec.get("syncedLyrics"))
         return [(_track_from_record(rec), rec) for rec in records]
 
     async def get_by_id(self, lrclib_id: int) -> tuple[TrackInfo, dict]:
