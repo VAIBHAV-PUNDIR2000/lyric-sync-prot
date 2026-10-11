@@ -1,4 +1,5 @@
 #include "stream_client.h"
+#include <cstring>
 
 RingBuffer::RingBuffer(size_t size) : _size(size), _head(0), _tail(0), _closed(false) {
     _buffer = new uint8_t[size];
@@ -9,8 +10,8 @@ RingBuffer::~RingBuffer() {
 }
 
 size_t RingBuffer::available() const {
-    size_t h = _head.load();
-    size_t t = _tail.load();
+    size_t h = _head.load(std::memory_order_acquire);
+    size_t t = _tail.load(std::memory_order_acquire);
     if (h >= t) {
         return h - t;
     }
@@ -22,37 +23,53 @@ size_t RingBuffer::freeSpace() const {
 }
 
 size_t RingBuffer::write(const uint8_t* data, size_t len) {
-    if (_closed) return 0;
-    
-    size_t space = freeSpace();
+    if (_closed.load(std::memory_order_acquire)) return 0;
+
+    size_t h = _head.load(std::memory_order_relaxed);
+    size_t t = _tail.load(std::memory_order_acquire);
+    size_t space = (t == 0) ? (_size - 1 - h) + 0
+                            : (h >= t) ? (_size - 1 - h + t)
+                                       : (t - h - 1);
     if (len > space) {
-        len = space; // truncate if full
+        len = space;
     }
-    
-    for (size_t i = 0; i < len; ++i) {
-        _buffer[_head] = data[i];
-        _head = (_head + 1) % _size;
+    if (len == 0) return 0;
+
+    // Copy data in up to two segments (wrap-around), then publish _head once.
+    size_t first = _size - h;
+    if (first > len) first = len;
+    memcpy(_buffer + h, data, first);
+    if (len > first) {
+        memcpy(_buffer, data + first, len - first);
     }
+    _head.store((h + len) % _size, std::memory_order_release);
     return len;
 }
 
 size_t RingBuffer::read(uint8_t* data, size_t len) {
-    size_t avail = available();
+    size_t t = _tail.load(std::memory_order_relaxed);
+    size_t h = _head.load(std::memory_order_acquire);
+    size_t avail = (h >= t) ? (h - t) : (_size - t + h);
     if (len > avail) {
         len = avail;
     }
-    
-    for (size_t i = 0; i < len; ++i) {
-        data[i] = _buffer[_tail];
-        _tail = (_tail + 1) % _size;
+    if (len == 0) return 0;
+
+    // Copy data in up to two segments (wrap-around), then publish _tail once.
+    size_t first = _size - t;
+    if (first > len) first = len;
+    memcpy(data, _buffer + t, first);
+    if (len > first) {
+        memcpy(data + first, _buffer, len - first);
     }
+    _tail.store((t + len) % _size, std::memory_order_release);
     return len;
 }
 
 void RingBuffer::close() {
-    _closed = true;
+    _closed.store(true, std::memory_order_release);
 }
 
 bool RingBuffer::isClosed() const {
-    return _closed;
+    return _closed.load(std::memory_order_acquire);
 }

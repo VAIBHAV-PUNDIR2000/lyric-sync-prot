@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from httpx import ASGITransport, AsyncClient
 from main import app
@@ -15,8 +16,8 @@ async def test_streaming_identify_endpoint(monkeypatch):
     from lyrics import LyricsService
     app.state.sync = Synchronizer()
     app.state.lyrics = LyricsService()
-    # Mock recognizer and lyrics lookup
     app.state.recognizer = DummyRecognizer()
+    app.state.recognize_lock = asyncio.Lock()
 
     async def mock_find_best(title, artist):
         from lyrics import TrackInfo
@@ -27,7 +28,6 @@ async def test_streaming_identify_endpoint(monkeypatch):
     app.state.lyrics.find_best = mock_find_best
 
     async def chunk_generator():
-        # Stream 32,000 bytes of raw PCM in 1024-byte chunks
         for _ in range(32):
             yield b"\x00" * 1024
 

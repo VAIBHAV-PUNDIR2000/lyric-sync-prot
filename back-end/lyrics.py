@@ -82,7 +82,10 @@ class LyricsService:
 
     async def search(self, query: str | None = None, *, title: str | None = None,
                      artist: str | None = None) -> list[tuple[TrackInfo, dict]]:
-        """Return (TrackInfo, raw record) pairs, synced-lyrics results first."""
+        """Return (TrackInfo, raw record) pairs, synced-lyrics results first.
+
+        Raises httpx.HTTPError on network / API failures (H4: callers handle it).
+        """
         params: dict[str, str] = {}
         if query:
             params["q"] = query
@@ -92,15 +95,11 @@ class LyricsService:
             params["artist_name"] = artist
         if not params:
             return []
-        try:
-            r = await self._client.get("/search", params=params)
-            r.raise_for_status()
-            records = r.json()
-            records.sort(key=lambda rec: not rec.get("syncedLyrics"))  # stable
-            return [(_track_from_record(rec), rec) for rec in records]
-        except httpx.HTTPError as e:
-            print(f"LRCLIB API error: {e}")
-            return []
+        r = await self._client.get("/search", params=params)
+        r.raise_for_status()
+        records = r.json()
+        records.sort(key=lambda rec: not rec.get("syncedLyrics"))
+        return [(_track_from_record(rec), rec) for rec in records]
 
     async def get_by_id(self, lrclib_id: int) -> tuple[TrackInfo, dict]:
         r = await self._client.get(f"/get/{lrclib_id}")
